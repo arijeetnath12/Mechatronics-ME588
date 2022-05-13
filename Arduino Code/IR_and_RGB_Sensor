@@ -1,0 +1,76 @@
+#include <Adafruit_NeoPixel.h>    // For LED Strip
+#include <Wire.h>
+#include "Adafruit_TCS34725.h"
+#define LED_PIN 31
+#define LED_COUNT 8
+Adafruit_NeoPixel strip(LED_COUNT, LED_PIN, NEO_GRBW + NEO_KHZ800);
+Adafruit_TCS34725 tcs = Adafruit_TCS34725(TCS34725_INTEGRATIONTIME_614MS, TCS34725_GAIN_1X);
+
+
+// Left Line Sensor
+int enableL = 37;  // Pin designation for enable of Left IR line sensor
+int inputL = 25;   // Pin designation for output of Left IR line sensor
+
+// Right Line Sensor
+int enableR = 35;  // Pin designation for enable of Right IR line sensor
+int inputR = 23;   // Pin designation for output of Right IR line sensor
+
+int valL = 0;     // Variable to store digital output from left sensor
+int valR = 0;     // Variable to store digital output from right sensor
+uint32_t white = strip.Color(255,255,255);   // Store 32bit color code for white
+
+byte gammatable[256];
+int lux = 0;
+void setup() {
+  Serial.begin(9600);
+  pinMode(inputL,INPUT);    //Left IR line sensor input pin
+  pinMode(enableL, OUTPUT);  //Left IR line sensor enable pin
+  pinMode(inputR, INPUT);  //Right IR line sensor enable pin
+  pinMode(enableR, OUTPUT);  //Right IR line sensor enable pin
+  
+  // LED setup 
+  strip.begin();
+  strip.show();               //Initialize all pixels to 'off'
+  strip.setBrightness(75);   //Default LED brightness from 0-255
+
+  for (int i=0; i<256; i++) {
+    float x = i;
+    x /= 255;
+    x = pow(x, 2.5);
+    x *= 255;
+    gammatable[i] = x;
+  }
+  
+}
+
+void loop() { 
+  digitalWrite(enableL, LOW);
+  digitalWrite(enableR, LOW);
+  valL = digitalRead(inputL);
+  valR = digitalRead(inputR);
+
+  float red, green, blue;
+  tcs.getRGB(&red, &green, &blue);
+  lux = tcs.calculateLux(red, green, blue);
+  uint32_t reading = strip.Color(gammatable[(int)red],gammatable[(int)green],gammatable[(int)blue]);   // Store current color code
+  Serial.print("Red: ");
+  Serial.println(gammatable[(int)red]);
+  Serial.print("Green: ");
+  Serial.println(gammatable[(int)green]);
+  Serial.print("Blue: ");
+  Serial.println(gammatable[(int)blue]);
+  Serial.print("Lux: ");
+  Serial.println(lux);
+  Serial.println();
+  delay(100);
+  
+  if ((valL == LOW) && (valR == LOW)){
+    strip.fill(white, 0, 7);
+    strip.show();
+  }
+  else{
+    strip.fill(reading, 0, 7);
+    strip.show();
+  }
+  delay(100);
+}
