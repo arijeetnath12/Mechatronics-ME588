@@ -1,0 +1,366 @@
+// State names and values
+const int S0 = 100;
+const int S1 = 101;
+const int S2 = 102;
+const int S3 = 103;
+const int S4 = 104;
+const int S5 = 105;
+const int S6 = 106;
+
+// Initialize state 
+int state = S0;
+
+// FSM input variables
+int CS = 0;     // Color selected
+int SB = 0;     // Start button pressed
+int NS = 0;     // New square detected
+int OFDC = -1;  // One foot traveled AND desired color detected
+int WS = 0;     // White square detected
+int BP = 0;     // Block placed
+int ND = 0;     // 90 degrees turned
+int FW = 0;     // Front wall detected
+int SW = 0;     // Side wall detected
+int ES = 0;     // Emergency stop button pressed
+
+// sys_input is used to give inputs from the serial monitor
+char sys_input = ' ';
+char prev_sys_input = ' ';
+char temp = ' ';
+
+//LED Strip 
+#include <Adafruit_NeoPixel.h>
+#define LED_PIN 6
+#define LED_COUNT 60
+
+int count = 1;
+int red = 0;
+int blue = 0;
+int green = 0;
+int error = 255; 
+int block = 7; 
+Adafruit_NeoPixel strip(LED_COUNT, LED_PIN, NEO_GRBW + NEO_KHZ800);
+
+// Input pins
+
+// Output pins
+
+void setup() {
+  // Startup message
+  Serial.begin(9600);   // Start serial port
+  Serial.println("Final Project Preliminary FSM");
+  Serial.println("-----------------------------");
+  Serial.println("Stage 0: Select target color (R, G, or B)");
+
+// LED setup 
+  strip.begin();
+  strip.show(); // Initialize all pixels to 'off'
+  strip.setBrightness(100);
+
+  
+  // Setup output pins
+  //pinMode(BApin, OUTPUT);
+}
+
+void loop() {
+  // 1. READ DEVICE INPUTS
+  //CS = digitalRead(CSpin);
+
+  // Read incoming byte
+  if (Serial.available() > 0) {
+    temp = Serial.read();
+  }
+
+  // Only print input if input changes
+  if (temp != prev_sys_input) {
+    sys_input = temp;
+    prev_sys_input = temp;
+    Serial.println(sys_input);
+  }
+
+  // Mapping user inputs to FSM input variables
+  if (sys_input == 'R'){
+    CS = 1;
+    red = 255;
+    green = 0; 
+    blue = 0;
+  } else if (sys_input == 'G'){
+    CS = 1;
+    green = 255;
+    red = 0;
+    blue = 0;
+  } else if (sys_input == 'B'){
+    CS = 1;
+    blue = 255;
+    red = 0;
+    green = 0;
+  } else if (sys_input == 'S') {
+    SB = 1;
+  } else if (sys_input == 'N') {
+    NS = 1;
+  } else if (sys_input == 'O') {
+    OFDC = 1;
+  } else if (sys_input == 'P') {
+    OFDC = 0;
+  } else if (sys_input == 'W') {
+    WS = 1;
+  } else if (sys_input == 'C') {
+    BP = 1;
+  } else if (sys_input == '9') {
+    ND = 1;
+  } else if (sys_input == 'F') {
+    FW = 1;
+  } else if (sys_input == 'T') {
+    SW = 1;
+  } else if (sys_input == 'E') {
+    ES = 1;
+  }
+ 
+  // 2. FINITE STATE MACHINE
+  switch (state) {
+    case S0:                  // Robot start: Wait for color selection from user
+      // Reset FSM inputs
+      SB = 0;
+      NS = 0;
+      OFDC = -1;
+      WS = 0;
+      BP = 0;
+      ND = 0;
+      FW = 0;
+      SW = 0;
+      ES = 0;
+      block = 7; 
+      strip.clear();
+      strip.show();
+      
+      if (CS) {               // Color selected
+        state = S1;
+        strip.setPixelColor(1, red, green, blue, 0);
+        strip.show();
+        Serial.println("LED for target color ON");
+        Serial.println("-----------------------------");
+        Serial.println("Stage 1: Press start button");
+      }
+      break;
+
+    case S1:                  // Color selected: Wait for game mode start
+      // Reset FSM inputs
+      CS = 0;
+      NS = 0;
+      OFDC = -1;
+      WS = 0;
+      BP = 0;
+      ND = 0;
+      FW = 0;
+      SW = 0;
+      strip.setPixelColor(1, red, green, blue, 0);
+      strip.show();
+     
+      if (SB) {  
+        // Start button pressed
+        state = S2;
+        Serial.println("LED for game mode ON");
+        Serial.println("Motor drive ON");
+        Serial.println("-----------------------------");
+        Serial.println("Stage 2: Robot following path"); 
+      } 
+      
+      if (ES) {               // Emergency stop button pressed
+        strip.clear();
+        state = S0;
+        Serial.println("-----------------------------");
+        Serial.println("SYSTEM RESET: EMERGENCY STOP BUTTON PRESSED");
+        Serial.println("-----------------------------");
+        Serial.println("Final Project Preliminary FSM");
+        Serial.println("-----------------------------");
+        Serial.println("Stage 0: Select target color (R, G, or B)");
+      }
+      break;
+
+    case S2:                  // Game mode: Robot following path
+      // Reset FSM inputs
+      CS = 0;
+      SB = 0;
+      OFDC = -1;
+      BP = 0;
+      ND = 0; 
+      strip.setPixelColor(1, red, green, blue, 0);
+      strip.setPixelColor(0, 255, 255, 255, 0);
+        strip.show();
+      
+      if (NS) {               // New square detected
+        state = S3;
+        Serial.println("-----------------------------");
+        Serial.println("Stage 3: New square detected");
+        Serial.println("Color block added to LCD screen");
+      } else if (FW) {        // Front wall detected
+        state = S5;
+        Serial.println("-----------------------------");
+        Serial.println("Stage 5: Wall detected --- Turning 90 degrees");
+      } else if (SW) {        // Side wall detected
+        state = S6;
+        strip.setPixelColor(2, error, 0, 0, 0);
+        strip.show();
+        Serial.println("-----------------------------");
+        Serial.println("Stage 6: Path correction");
+        Serial.println("LED for path correction ON");
+        delay(2000);
+      } 
+
+      if (ES) {               // Emergency stop button pressed
+        strip.clear();
+        state = S0;
+        Serial.println("-----------------------------");
+        Serial.println("SYSTEM RESET: EMERGENCY STOP BUTTON PRESSED");
+        Serial.println("-----------------------------");
+        Serial.println("Final Project Preliminary FSM");
+        Serial.println("-----------------------------");
+        Serial.println("Stage 0: Select target color (R, G, or B)");
+      } else if (WS) {        // White square detected
+        strip.clear();
+        state = S0;
+        Serial.println("-----------------------------");
+        Serial.println("All moles whacked!");
+        Serial.println("-----------------------------");
+        Serial.println("SYSTEM RESET");
+        Serial.println("-----------------------------");
+        Serial.println("Stage 0: Select target color (R, G, or B)");
+      }
+      break;
+      
+    case S3:                  // New square detected: Wait to travel one foot
+      // Reset FSM inputs
+      CS = 0;
+      SB = 0;
+      NS = 0;
+      WS = 0;
+      BP = 0;
+      ND = 0;
+      FW = 0;
+      SW = 0;
+      
+      if (OFDC == 1) {        // One foot traveled and desired color detected
+        state = S4;
+        Serial.println("Target color detected");
+        Serial.println("-----------------------------");
+        Serial.println("Stage 4: Whack the mole");
+        Serial.println("Motor drive OFF");
+        Serial.println("One LED turns ON for corresponding block");
+        Serial.println("Mole whacker ON");
+      } else if (OFDC == 0) { // One foot traveled but desired color not detected
+        state = S2;
+        Serial.println("Target color not detected");
+        Serial.println("-----------------------------");
+        Serial.println("Stage 2: Robot following path");
+      }
+      
+      if (ES) {               // Emergency stop button pressed
+        state = S0;
+        strip.clear();
+        Serial.println("-----------------------------");
+        Serial.println("SYSTEM RESET: EMERGENCY STOP BUTTON PRESSED");
+        Serial.println("-----------------------------");
+        Serial.println("Final Project Preliminary FSM");
+        Serial.println("-----------------------------");
+        Serial.println("Stage 0: Select target color (R, G, or B)");
+      }
+      break;
+
+    case S4:                  // Place block
+      // Reset FSM inputs
+      CS = 0;
+      SB = 0;
+      NS = 0;
+      OFDC = -1;
+      WS = 0;
+      ND = 0;
+      FW = 0;
+      SW = 0;
+      count = 7; 
+      
+      if (BP) {               // Block placed
+        strip.setPixelColor(block, red, green, blue, 0);
+        strip.show();
+        block--;
+        state = S2;
+        Serial.println("Mole whacked!");
+        Serial.println("Mole whacker OFF");
+        Serial.println("-----------------------------");
+        Serial.println("Stage 2: Robot following path");
+      } 
+      
+      if (ES) {               // Emergency stop button pressed
+        state = S0;
+        strip.clear();
+        Serial.println("-----------------------------");
+        Serial.println("SYSTEM RESET: EMERGENCY STOP BUTTON PRESSED");
+        Serial.println("-----------------------------");
+        Serial.println("Final Project Preliminary FSM");
+        Serial.println("-----------------------------");
+        Serial.println("Stage 0: Select target color (R, G, or B)");
+      }
+      break;
+
+    case S5:                  // Turn robot 90 degrees
+      // Reset FSM inputs
+      CS = 0;
+      SB = 0;
+      NS = 0;
+      OFDC = -1;
+      WS = 0;
+      BP = 0;
+      FW = 0;
+      SW = 0;
+      
+      if (ND) {               // 90 degrees turned
+        state = S2;
+        Serial.println("90 degrees turned");
+        Serial.println("-----------------------------");
+        Serial.println("Stage 2: Robot following path");
+      } 
+      
+      if (ES) {               // Emergency stop button pressed
+        state = S0;
+        Serial.println("-----------------------------");
+        Serial.println("SYSTEM RESET: EMERGENCY STOP BUTTON PRESSED");
+        Serial.println("-----------------------------");
+        Serial.println("Final Project Preliminary FSM");
+        Serial.println("-----------------------------");
+        Serial.println("Stage 0: Select target color (R, G, or B)");
+      }
+      break;
+
+    case S6:                  // Correct robot path
+      // Reset FSM inputs
+      CS = 0;
+      SB = 0;
+      NS = 0;
+      OFDC = -1;
+      WS = 0;
+      BP = 0;
+      ND = 0;
+      FW = 0;
+      SW = 0;
+      
+      if (!SW) {              // Side wall not detected
+        strip.setPixelColor(2, 0, 0, 0, 0);
+        strip.show();
+        state = S2;
+        Serial.println("LED for path correction OFF");
+        Serial.println("-----------------------------");
+        Serial.println("Stage 2: Robot following path");
+        delay(5000);
+      }
+      
+      if (ES) {               // Emergency stop button pressed
+        state = S0;
+        strip.clear();
+        Serial.println("-----------------------------");
+        Serial.println("SYSTEM RESET: EMERGENCY STOP BUTTON PRESSED");
+        Serial.println("-----------------------------");
+        Serial.println("Final Project Preliminary FSM");
+        Serial.println("-----------------------------");
+        Serial.println("Stage 0: Select target color (R, G, or B)");
+      }
+      break;
+  }
+}
