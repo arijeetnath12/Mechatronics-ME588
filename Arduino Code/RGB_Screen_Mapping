@@ -1,0 +1,611 @@
+#include <Encoder.h>
+#include <PID_v1.h>
+#include <Adafruit_NeoPixel.h>    // For LED Strip
+#include <Wire.h>
+#include <Adafruit_GFX.h>         // Core graphics library
+#include <Adafruit_ST7789.h>      // Hardware-specific library for ST7789
+#include <SdFat.h>                // SD card & FAT filesystem library
+#include <Adafruit_SPIFlash.h>    // SPI / QSPI flash library
+#include <Adafruit_ImageReader.h> // Image-reading functions
+#include "Adafruit_TCS34725.h"
+#define LED_PIN 31
+#define LED_COUNT 8
+Adafruit_NeoPixel strip(LED_COUNT, LED_PIN, NEO_GRBW + NEO_KHZ800);
+Adafruit_TCS34725 tcs = Adafruit_TCS34725(TCS34725_INTEGRATIONTIME_614MS, TCS34725_GAIN_1X);
+// Load from SD card:
+#define USE_SD_CARD
+#include <Servo.h>             // Servo library
+Servo servo_test;              // Initialize a servo object for the connected servo  
+
+// Define finite state names and associated integer values
+const int COLORREAD = 101;
+const int RESET = 102;
+const int DONE = 103;
+const int HOME = 104;
+const int RED = 105;
+const int GREEN = 106;
+const int BLUE = 107;
+const int DESCOLOR = 108;
+int FSM_State = HOME;
+
+// Left Line Sensor
+int enableL = 37;  // Pin designation for enable of Left IR line sensor
+int inputL = 25;   // Pin designation for output of Left IR line sensor
+// Right Line Sensor
+int enableR = 35;  // Pin designation for enable of Right IR line sensor
+int inputR = 23;   // Pin designation for output of Right IR line sensor
+int valL = 0;     // Variable to store digital output from left sensor
+int valR = 0;     // Variable to store digital output from right sensor
+
+// Servo
+int angle = 0;    
+
+// RGB Sensor
+uint32_t white = strip.Color(255,255,255);   // Store 32bit color code for white
+byte gammatable[256];
+int lux = 0;
+
+
+// Define all pins needed for the LED buttons and capacitive touch sensor
+int capTouch = 33;
+int redButton = 24;
+int greenButton = 26;
+int blueButton = 28;
+int redLED = 43;
+int greenLED = 41;
+int blueLED = 39;
+
+
+// TFT display and SD card share the hardware SPI interface, using
+// 'select' pins for each to identify the active device on the bus.
+#define SD_CS    53   // SD card select pin
+#define TFT_CS  49   // TFT select pin
+#define TFT_DC   45   // TFT display/command pin
+#define TFT_RST  47   // Or set to -1 and connect to Arduino RESET pin
+
+// Count variable used 
+int block = 0;
+// Variables to hold current color for LED Strip
+int red = 0;
+int green = 0;
+int blue = 0;
+// Target color selection flag
+int color = 0;
+// Blocks dropped of target color
+int dropped = 0;
+
+// Define 15x2 array containing all x-y coordinate positions on LCD screen for arena mapping purposes
+int mapping[15][2] = {
+  {182,124},
+  {182,66},
+  {182,8},
+  {124,8},
+  {66,8},
+  {8,8},
+  {8,66},
+  {8,124},
+  {8,182},
+  {66,182},
+  {66,124},
+  {66,66},
+  {124,66},
+  {124,124},
+  {124,182}};
+
+#if defined(USE_SD_CARD)
+  SdFat                SD;         // SD card filesystem
+  Adafruit_ImageReader reader(SD); // Image-reader object, pass in SD filesys
+#else
+  // SPI or QSPI flash filesystem (i.e. CIRCUITPY drive)
+  #if defined(__SAMD51__) || defined(NRF52840_XXAA)
+    Adafruit_FlashTransport_QSPI flashTransport(PIN_QSPI_SCK, PIN_QSPI_CS,
+      PIN_QSPI_IO0, PIN_QSPI_IO1, PIN_QSPI_IO2, PIN_QSPI_IO3);
+  #else
+    #if (SPI_INTERFACES_COUNT == 1)
+      Adafruit_FlashTransport_SPI flashTransport(SS, &SPI);
+    #else
+      Adafruit_FlashTransport_SPI flashTransport(SS1, &SPI1);
+    #endif
+  #endif
+  Adafruit_SPIFlash    flash(&flashTransport);
+  FatFileSystem        filesys;
+  Adafruit_ImageReader reader(filesys); // Image-reader, pass in flash filesys
+#endif
+
+Adafruit_ST7789      tft    = Adafruit_ST7789(TFT_CS, TFT_DC, TFT_RST);
+Adafruit_Image       img;        // An image loaded into RAM
+int32_t              width  = 0, // BMP image dimensions
+                     height = 0;
+
+//  Encoders
+//   Best Performance: both pins have interrupt capability
+//   Good Performance: only the first pin has interrupt capability
+//   Low Performance:  neither pin has interrupt capability
+Encoder knobLeft(2, 19);
+Encoder knobRight(18, 3);
+long positionLeft  = -999;
+long positionRight = -999;
+
+int EnApin = 4;
+int EnBpin = 5;
+int In1pin = 32;
+int In2pin = 30;
+int In3pin = 36;
+int In4pin = 34;
+
+//Define variables for PID controller
+double kpl = 2.5, kil = 0.1, kdl = 0.19;
+double kpr = 2.5, kir = 0.1, kdr = 0.19;
+
+double inputLeftPosition = 0,        //Variable that will be controlled
+       outputLeftPosition = 0,       //Amount of action needed to take (PWM)
+       desPositionLeft = 0;   //The value to be maintained
+double inputRightPosition = 0,       
+       outputRightPosition = 0, 
+       desPositionRight = 0;
+
+//Specify the links and initial tuning parameters
+PID leftPID(&inputLeftPosition, &outputLeftPosition, &desPositionLeft, kpl, kil, kdl, DIRECT);
+PID rightPID(&inputRightPosition, &outputRightPosition, &desPositionRight, kpr, kir, kdr, DIRECT);
+
+void setup() {
+  Serial.begin(9600);
+  pinMode(In1pin, OUTPUT);
+  pinMode(In2pin, OUTPUT);
+  pinMode(In3pin, OUTPUT);
+  pinMode(In4pin, OUTPUT);
+  pinMode(inputL,INPUT);    //Left IR line sensor input pin
+  pinMode(enableL, OUTPUT);  //Left IR line sensor enable pin
+  pinMode(inputR, INPUT);  //Right IR line sensor enable pin
+  pinMode(enableR, OUTPUT);  //Right IR line sensor enable pin
+
+  //Set modes of all digital pins
+  pinMode(capTouch, INPUT);
+  pinMode(redButton, INPUT);
+  pinMode(greenButton, INPUT);
+  pinMode(blueButton, INPUT);
+  pinMode(redLED, OUTPUT);
+  pinMode(greenLED, OUTPUT);
+  pinMode(blueLED, OUTPUT);
+
+  //Servo Setup
+  servo_test.attach(10);      // attach the signal pin of servo to pin10 of arduino
+  servo_test.write(0); 
+
+  // LED Setup
+  strip.begin();
+  strip.show();               //Initialize all pixels to 'off'
+  strip.setBrightness(75);   //Default LED brightness from 0-255
+
+  //turn the two PID on and tune
+  leftPID.SetMode(AUTOMATIC);
+  leftPID.SetSampleTime(5);
+  leftPID.SetOutputLimits(-238, 238);
+  rightPID.SetMode(AUTOMATIC);
+  rightPID.SetSampleTime(5);
+  rightPID.SetOutputLimits(-240, 240);
+
+  for (int i=0; i<256; i++) {
+    float x = i;
+    x /= 255;
+    x = pow(x, 2.5);
+    x *= 255;
+    gammatable[i] = x;
+  }
+
+  #if !defined(ESP32)
+  while(!Serial);       // Wait for Serial Monitor before continuing
+#endif
+
+  tft.init(240, 240);           // Init ST7789 240x240
+
+  // The Adafruit_ImageReader constructor call (above, before setup())
+  // accepts an uninitialized SdFat or FatFileSystem object. This MUST
+  // BE INITIALIZED before using any of the image reader functions!
+  Serial.print(F("Initializing filesystem..."));
+#if defined(USE_SD_CARD)
+  // SD card is pretty straightforward, a single call...
+  if(!SD.begin(SD_CS, SD_SCK_MHZ(10))) { // Breakouts require 10 MHz limit due to longer wires
+    Serial.println(F("SD begin() failed"));
+    for(;;); // Fatal error, do not continue
+  }
+#else
+  // SPI or QSPI flash requires two steps, one to access the bare flash
+  // memory itself, then the second to access the filesystem within...
+  if(!flash.begin()) {
+    Serial.println(F("flash begin() failed"));
+    for(;;);
+  }
+  if(!filesys.begin(&flash)) {
+    Serial.println(F("filesys begin() failed"));
+    for(;;);
+  }
+#endif
+  Serial.println(F("OK!"));
+  
+  // Rotate screen orientation to correct orientation
+  tft.setRotation(2);
+}
+
+
+void forward() {
+  if ((outputLeftPosition > 0) && (outputRightPosition > 0)) {
+    analogWrite(EnBpin, outputLeftPosition);     
+    analogWrite(EnApin, outputRightPosition);
+    digitalWrite(In1pin, HIGH);
+    digitalWrite(In2pin, LOW);
+    digitalWrite(In3pin, HIGH);
+    digitalWrite(In4pin, LOW); 
+  }
+  else if (outputLeftPosition > 0) {
+    analogWrite(EnBpin, outputLeftPosition);
+    digitalWrite(In1pin, HIGH);
+    digitalWrite(In2pin, LOW);
+    digitalWrite(In3pin, LOW);
+    digitalWrite(In4pin, LOW); 
+  }
+  else {
+    analogWrite(EnApin, outputRightPosition);
+    digitalWrite(In1pin, LOW);
+    digitalWrite(In2pin, LOW);
+    digitalWrite(In3pin, HIGH);
+    digitalWrite(In4pin, LOW);
+  }
+}
+
+void reverse() {
+  if ((outputLeftPosition < 0) && (outputRightPosition < 0)) {
+    analogWrite(EnBpin, abs(outputLeftPosition));     
+    analogWrite(EnApin, abs(outputRightPosition));
+    digitalWrite(In1pin, LOW);
+    digitalWrite(In2pin, HIGH);
+    digitalWrite(In3pin, LOW);
+    digitalWrite(In4pin, HIGH); 
+  }
+  else if (outputLeftPosition < 0) {
+    analogWrite(EnBpin, abs(outputLeftPosition));
+    digitalWrite(In1pin, LOW);
+    digitalWrite(In2pin, HIGH);
+    digitalWrite(In3pin, LOW);
+    digitalWrite(In4pin, LOW); 
+  }
+  else {
+    analogWrite(EnApin, abs(outputRightPosition));
+    digitalWrite(In1pin, LOW);
+    digitalWrite(In2pin, LOW);
+    digitalWrite(In3pin, LOW);
+    digitalWrite(In4pin, HIGH);
+  }
+}
+
+void finish() {
+  digitalWrite(In1pin, LOW);
+  digitalWrite(In2pin, LOW);
+  digitalWrite(In3pin, LOW);
+  digitalWrite(In4pin, LOW); 
+}
+
+void pwmOutForward(int outputLeftPosition, int outputRightPosition) {     
+  if ((outputLeftPosition > 0) || (outputRightPosition > 0)) {                                        
+    forward();                                     
+  }
+  else if ((outputLeftPosition < 0) || (outputRightPosition < 0)){
+    reverse();  
+  }
+  else {
+    analogWrite(EnApin, 0);     
+    analogWrite(EnBpin, 0);
+    finish();
+  }
+}
+
+// Convert desired distances from inches to encoder counts
+int convert(double distance){
+  int convert = 0;
+  convert = (distance/8.41) * 230;
+  return convert;
+}
+
+// Debounce function for momentary pushbuttons
+int debounce(int pin)
+{
+  int pinVal1 = 0;
+  int pinVal2 = 0;
+
+  pinVal1 = digitalRead(pin);
+  delay(5);
+  pinVal2 = digitalRead(pin);
+
+  if(pinVal1 == pinVal2){
+    return pinVal1;
+  }
+  else{
+    return 0;
+  }
+}
+
+// Function to add red colored square to LCD screen
+void addRed(int xcoord, int ycoord)
+{
+  reader.drawBMP("/Red50.bmp", tft, xcoord, ycoord);
+  delay(250);
+  return;
+}
+
+// Function to add green colored square to LCD screen
+void addGreen(int xcoord, int ycoord)
+{
+  reader.drawBMP("/Green50.bmp", tft, xcoord, ycoord);
+  delay(250);
+  return;
+}
+
+// Function to add blue colored square to LCD screen
+void addBlue(int xcoord, int ycoord)
+{
+  reader.drawBMP("/Blue50.bmp", tft, xcoord, ycoord);
+  delay(250);
+  return;
+}
+
+
+
+
+void loop() {
+  switch(FSM_State){
+    case RESET:
+    strip.clear();
+    strip.setPixelColor(0, 0, 0, 0, 127);
+    strip.setPixelColor(1, red, green, blue, 0);
+    strip.show();
+    digitalWrite(redLED, LOW);
+    digitalWrite(greenLED, LOW);
+    digitalWrite(blueLED, LOW);
+    
+    if (red){
+      digitalWrite(redLED, HIGH);
+    }
+    else if (green){
+      digitalWrite(greenLED, HIGH);
+    }
+    else if (blue){
+      digitalWrite(blueLED, HIGH);
+    }
+    
+    block = 0;
+    dropped = 0;
+    tft.fillScreen(ST77XX_BLACK);
+    reader.drawBMP("/White50.bmp", tft, 182, 182);
+    FSM_State = COLORREAD;
+    break;
+
+    case COLORREAD:
+    strip.setPixelColor(0, 0, 0, 0, 127);
+    strip.setPixelColor(1, red, green, blue, 0);
+    strip.show();
+
+    float reds, greens, blues;
+    tcs.getRGB(&reds, &greens, &blues);
+    lux = tcs.calculateLux(reds, greens, blues);
+  
+    if (block == 15){
+      FSM_State = DONE;
+    }
+    else{
+      if(digitalRead(capTouch)){
+        FSM_State = RESET;
+      }
+      else{
+        if((gammatable[(int)reds] >= 30) && (gammatable[(int)blues] <= 15)){
+          FSM_State = RED;
+        }
+        else if((gammatable[(int)greens] >= 10) && (gammatable[(int)reds] <= 20) && (lux > 50)){
+          FSM_State = GREEN;
+        }
+        else if((gammatable[(int)blues] >= 20) && (gammatable[(int)reds] <= 20)){
+          FSM_State = BLUE;
+        }
+        else{
+          FSM_State = COLORREAD;
+        }
+      }
+    }
+    break;
+
+    case HOME:
+    strip.setPixelColor(1, red, green, blue, 0);
+    strip.show();
+    reader.drawBMP("/Assem1.bmp", tft, 0, 0);
+
+    if(color != 0){
+      if(digitalRead(capTouch)){
+        FSM_State = RESET;
+      }
+      else{
+        if(debounce(redButton)){
+        digitalWrite(redLED, HIGH);
+        digitalWrite(greenLED, LOW);
+        digitalWrite(blueLED, LOW);
+        red = 255;
+        green = 0;
+        blue = 0;
+        strip.setPixelColor(1, red, green, blue, 0);
+        strip.show();
+        color = 1;
+        }
+        else if(debounce(greenButton)){
+          digitalWrite(redLED, LOW);
+          digitalWrite(greenLED, HIGH);
+          digitalWrite(blueLED, LOW);
+          red = 0;
+          green = 255;
+          blue = 0;
+          strip.setPixelColor(1, red, green, blue, 0);
+          strip.show();
+          color = 1;
+        }
+        else if(debounce(blueButton)){
+          digitalWrite(redLED, LOW);
+          digitalWrite(greenLED, LOW);
+          digitalWrite(blueLED, HIGH);
+          red = 0;
+          green = 0;
+          blue = 255;
+          strip.setPixelColor(1, red, green, blue, 0);
+          strip.show();
+          color = 1;
+        }
+        else{
+          FSM_State = HOME;
+        }
+      }
+    }
+    else{
+      if(debounce(redButton)){
+        digitalWrite(redLED, HIGH);
+        digitalWrite(greenLED, LOW);
+        digitalWrite(blueLED, LOW);
+        red = 255;
+        green = 0;
+        blue = 0;
+        strip.setPixelColor(1, red, green, blue, 0);
+        strip.show();
+        color = 1;
+        }
+      else if(debounce(greenButton)){
+        digitalWrite(redLED, LOW);
+        digitalWrite(greenLED, HIGH);
+        digitalWrite(blueLED, LOW);
+        red = 0;
+        green = 255;
+        blue = 0;
+        strip.setPixelColor(1, red, green, blue, 0);
+        strip.show();
+        color = 1;
+      }
+      else if(debounce(blueButton)){
+        digitalWrite(redLED, LOW);
+        digitalWrite(greenLED, LOW);
+        digitalWrite(blueLED, HIGH);
+        red = 0;
+        green = 0;
+        blue = 255;
+        strip.setPixelColor(1, red, green, blue, 0);
+        strip.show();
+        color = 1;
+     }
+    }
+    break;
+
+    case RED:
+      strip.setPixelColor(0, 0, 0, 0, 127);
+      strip.setPixelColor(1, red, green, blue, 0);
+      strip.show();
+      addRed(mapping[block][0], mapping[block][1]);
+      block = block + 1;
+      if(dropped < 5){
+        if(red){
+        strip.setPixelColor((7-dropped), red, green, blue, 0);
+        dropped = dropped + 1;
+        
+        for(angle = 0; angle < 180; angle += 5){ // command to move from 0 degrees to 180 degrees                                 
+        servo_test.write(angle);                 //command to rotate the servo to the specified angle
+        delay(5);                       
+        } 
+        delay(1000);
+        for(angle = 180; angle>=1; angle -= 5){    // command to move from 180 degrees to 0 degrees                             
+        servo_test.write(angle);              //command to rotate the servo to the specified angle
+        delay(5);                       
+        } 
+        delay(1000);
+        }
+      }
+      FSM_State = COLORREAD;
+    break;
+
+    case GREEN:
+      strip.setPixelColor(0, 0, 0, 0, 127);
+      strip.setPixelColor(1, red, green, blue, 0);
+      strip.show();
+      addGreen(mapping[block][0], mapping[block][1]);
+      block = block + 1;
+      if(dropped < 5){
+        if(green){
+        strip.setPixelColor((7-dropped), red, green, blue, 0);
+        dropped = dropped + 1;
+
+        for(angle = 0; angle < 180; angle += 5){ // command to move from 0 degrees to 180 degrees                                 
+        servo_test.write(angle);                 //command to rotate the servo to the specified angle
+        delay(5);                       
+        } 
+        delay(1000);
+        for(angle = 180; angle>=1; angle -= 5){    // command to move from 180 degrees to 0 degrees                             
+        servo_test.write(angle);              //command to rotate the servo to the specified angle
+        delay(5);                       
+        } 
+        delay(1000);
+        }
+      }
+      FSM_State = COLORREAD;
+    break;
+
+    case BLUE:
+      strip.setPixelColor(0, 0, 0, 0, 127);
+      strip.setPixelColor(1, red, green, blue, 0);
+      strip.show();
+      addBlue(mapping[block][0], mapping[block][1]);
+      block = block + 1;
+      if(dropped < 5){
+        if(blue){
+        strip.setPixelColor((7-dropped), red, green, blue, 0);
+        dropped = dropped + 1;
+
+        for(angle = 0; angle < 180; angle += 5){ // command to move from 0 degrees to 180 degrees                                 
+        servo_test.write(angle);                 //command to rotate the servo to the specified angle
+        delay(5);                       
+        } 
+        delay(1000);
+        for(angle = 180; angle>=1; angle -= 5){    // command to move from 180 degrees to 0 degrees                             
+        servo_test.write(angle);              //command to rotate the servo to the specified angle
+        delay(5);                       
+        } 
+        delay(1000);
+        }
+      }
+      FSM_State = COLORREAD;
+    break;
+
+    case DONE:
+    delay(5000); // Pause 5 seconds before wiping screen and starting over
+    strip.clear();
+    strip.show();
+    digitalWrite(redLED, LOW);
+    digitalWrite(greenLED, LOW);
+    digitalWrite(blueLED, LOW);
+    color = 0;
+    red = 0;
+    green = 0;
+    blue = 0;
+    dropped = 0;
+    
+    reader.drawBMP("/purdue1.bmp", tft, 0, 0);
+    delay(3000);  // Pause to credit Purdue Mechanical Engineering
+
+    FSM_State = HOME;
+    break;
+  }
+  
+ 
+//  digitalWrite(enableL, LOW);  // Set both IR Line Sensor to active
+//  digitalWrite(enableR, LOW);
+//  valL = digitalRead(inputL);  // Read both IR Line Sensors
+//  valR = digitalRead(inputR);
+//  
+//  // Determine encoder position
+//  long newLeft, newRight;
+//  newLeft = knobLeft.read();
+//  newRight = knobRight.read();
+//  positionLeft = newLeft;
+//  positionRight = newRight;
+
+}
