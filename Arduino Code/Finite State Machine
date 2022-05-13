@@ -1,0 +1,825 @@
+// 1. LIBRARIES
+#include <Adafruit_GFX.h>           // Core graphics library
+#include <Adafruit_ST7789.h>        // Hardware-specific library for ST7789
+#include <SdFat.h>                  // SD card & FAT file system library
+#include <Adafruit_SPIFlash.h>      // SPI/QSPI flash library
+#include <Adafruit_ImageReader.h>   // Image-reading functions
+#include <Adafruit_NeoPixel.h>      // For LED strip
+#include "Adafruit_TCS34725.h"      // For RGB color sensor
+#include <Servo.h>                  // Servo motor library
+#include <Encoder.h>                // Encoder library
+
+int colorSensorDelay = 20;
+unsigned long sTime = 0;
+unsigned long lTime = 0;
+int tflag = 0;
+int flag = 0;
+int turn_direc = 0;
+int rightTurn = 203;
+int leftTurn = 209;
+int rightSpeed = 152;
+int leftSpeed = 151;
+int timeDriveStraight = 950;
+int timeTurn = 750;
+
+// 2. DEFINE CONSTANTS
+#define LED_COUNT 8                 // Number of LEDs
+#define COLOR_ON 255                // Color brightness setting
+#define USE_SD_CARD                 // SD card handle
+#define SD_CS   53                  // SD card select pin
+#define TFT_CS  49                  // TFT select pin
+#define TFT_DC  45                  // TFT display/command pin
+#define TFT_RST 47                  // Or set to -1 and connect to Arduino RESET pin
+#define NMOTORS 2                   // Number of DC motors
+
+// 3. INITIALIZE VARIABLES
+// For RGB buttons
+int redButtonState = 0;             // Red button state
+int greenButtonState = 0;           // Green button state
+int blueButtonState = 0;            // Blue button state
+int redSelect = 0;                  // Red selected as target color
+int greenSelect = 0;                // Green selected as target color
+int blueSelect = 0;                 // Blue selected as target color
+
+// For LED strip
+int red = 0;                        // Red color intensity for LED strip
+int green = 0;                      // Green color intensity for LED strip
+int blue = 0;                       // Blue color intensity for LED strip
+
+// For RGB color sensor
+int redCheck = 0;                   // Check if current tile is red
+int greenCheck = 0;                 // Check if current tile is green
+int blueCheck = 0;                  // Check if current tile is blue
+
+// For IR sensors
+int valL = 0;                       // Output from left IR sensor
+int valR = 0;                       // Output from right IR sensor
+
+// For LCD screen
+int mapping[15][2] = {              // Positions of tiles on LCD screen
+  {182,124},
+  {182,66},
+  {182,8},
+  {124,8},
+  {66,8},
+  {8,8},
+  {8,66},
+  {8,124},
+  {8,182},
+  {66,182},
+  {66,124},
+  {66,66},
+  {124,66},
+  {124,124},
+  {124,182}};
+
+// LCD screen logic setup
+#if defined(USE_SD_CARD)
+  SdFat                SD;         // SD card filesystem
+  Adafruit_ImageReader reader(SD); // Image-reader object, pass in SD filesys
+#else
+  // SPI or QSPI flash filesystem (i.e. CIRCUITPY drive)
+  #if defined(__SAMD51__) || defined(NRF52840_XXAA)
+    Adafruit_FlashTransport_QSPI flashTransport(PIN_QSPI_SCK, PIN_QSPI_CS,
+      PIN_QSPI_IO0, PIN_QSPI_IO1, PIN_QSPI_IO2, PIN_QSPI_IO3);
+  #else
+    #if (SPI_INTERFACES_COUNT == 1)
+      Adafruit_FlashTransport_SPI flashTransport(SS, &SPI);
+    #else
+      Adafruit_FlashTransport_SPI flashTransport(SS1, &SPI1);
+    #endif
+  #endif
+  Adafruit_SPIFlash    flash(&flashTransport);
+  FatFileSystem        filesys;
+  Adafruit_ImageReader reader(filesys); // Image-reader, pass in flash filesys
+#endif
+
+Adafruit_ST7789      tft    = Adafruit_ST7789(TFT_CS, TFT_DC, TFT_RST);
+Adafruit_Image       img;        // An image loaded into RAM
+int32_t              width  = 0, // BMP image dimensions
+                     height = 0;
+
+// For motor control
+int LED_num = 7;                    // LED number on LED strip
+int tile_num = 0;                   // Tile number that robot is on
+long prevT = 0;                     // Previous time reading
+int newLeft, newRight;              // New left and right encoder positions
+volatile int pos[] = {0,0};         // Motor positions
+volatile float vel[] = {0,0};       // Motor velocities
+int posPrev[] = {0,0};              // Previous motor positions
+float velPrev[] = {0,0};            // Previous motor velocities
+float vfilt[] = {0,0};              // Filtered motor velocities
+long currenc[] = {0,0};
+long enc[] = {0,0};
+int motor_pwm[] = {0,0};            // PID computation stored here
+float e[] = {0,0};                  // Error
+float e_int[] = {0,0};              // Integrated error
+float e_der[] = {0,0};              // Error derivative
+float e_prev[] = {0,0};             // Previous error
+float targetVel[] = {0,0};          // Target motor speed
+float Kp[] = {10,10};               // Proportional control constants
+float Ki[] = {1.85,1.85};           // Integral control constants
+float Kd[] = {0.0,0.0};             // Derivative control constants
+
+// For timed control
+unsigned long totalTime = 0;        // Time from program start
+unsigned long startTime = 0;        // Time from when start button is pushed
+
+// State names and values
+const int S0 = 100;
+const int S1 = 101;
+const int S2 = 102;
+const int S3 = 103;
+const int S4 = 104;
+const int S5 = 105;
+const int S6 = 106;
+
+// Initialize state 
+int state = S0;
+
+// FSM input variables
+int CS = 0;       // Color selected
+int SB = 0;       // Start button pressed
+int NS = 0;       // New square detected
+int OF = 0;       // One foot traveled
+int DC = 0;       // Desired color detected
+int WS = 0;       // White square detected
+int BP = 0;       // Block placed
+int NB = 0;       // Number of blocks placed
+int ND = 0;       // 90 degrees turned
+int FW = 0;       // Front wall detected
+int SW = 0;       // Side wall detected
+int TO = 0;       // Time runs out
+
+// sys_input is used to give inputs from the serial monitor
+char sys_input = ' ';
+char prev_sys_input = ' ';
+char temp = ' ';
+
+// Input pins
+int redButton = 24;           // Red button
+int greenButton = 26;         // Green button
+int blueButton = 28;          // Blue button
+int capTouch = 33;            // Capacitive touch button
+int inputL = 25;              // Input from left IR line sensor
+int inputR = 23;              // Input from right IR line sensor
+
+// Output pins
+int redLED = 43;              // Red button LED
+int greenLED = 41;            // Green button LED
+int blueLED = 39;             // Blue button LED
+int LED_PIN = 31;             // LED strip
+int enableL = 37;             // Enable of left IR line sensor
+int enableR = 35;             // Enable of right IR line sensor
+const int pwm[] = {4,5};      // DC motor enable pins
+const int in1[] = {32,36};    // DC motor in1 pins
+const int in2[] = {30,34};    // DC motor in2 pins
+
+// Function calls and declarations
+Adafruit_NeoPixel strip(LED_COUNT, LED_PIN, NEO_GRBW + NEO_KHZ800);                           // For LED strip
+Adafruit_TCS34725 tcs = Adafruit_TCS34725(TCS34725_INTEGRATIONTIME_614MS, TCS34725_GAIN_1X);  // For RGB color sensor
+Servo mole_whacker;           // For mole whacker
+Encoder knobLeft(2, 19);      // For left DC motor
+Encoder knobRight(18, 3);     // For right DC motor
+
+void setup() {
+  // Startup message
+  Serial.begin(9600);   // Start serial port
+  Serial.println("Final Project Preliminary FSM");
+  Serial.println("-----------------------------");
+  Serial.println("Stage 0: Select target color (R, G, or B)");
+  
+  // Setup output pins
+  pinMode(redLED, OUTPUT);      // Red LED button
+  pinMode(greenLED, OUTPUT);    // Green LED button
+  pinMode(blueLED, OUTPUT);     // Blue LED button
+  pinMode(enableL, OUTPUT);     // Left IR line sensor enable pin
+  pinMode(enableR, OUTPUT);     // Right IR line sensor enable pin
+  
+  // Initialize IR line sensor enable pins
+  digitalWrite(enableL, LOW);
+  digitalWrite(enableR, LOW);
+
+  // LED strip setup 
+  strip.begin();                // Start LED strip
+  strip.show();                 // Initialize all pixels to 'off'
+  strip.setBrightness(75);      // Default LED brightness from 0-255
+
+  // Servo motor setup
+  mole_whacker.attach(10);      // Attach pin
+  mole_whacker.write(0);        // Initialize angle
+
+  // LCD screen setup
+  #if !defined(ESP32)
+    while(!Serial);             // Wait for Serial Monitor before continuing
+  #endif
+  
+  tft.init(240, 240);           // Init ST7789 240x240
+  
+  // The Adafruit_ImageReader constructor call (above, before setup())
+  // accepts an uninitialized SdFat or FatFileSystem object. This MUST
+  // BE INITIALIZED before using any of the image reader functions!
+  Serial.print(F("Initializing filesystem..."));
+  #if defined(USE_SD_CARD)
+    // SD card is pretty straightforward, a single call
+    if(!SD.begin(SD_CS, SD_SCK_MHZ(10))) { // Breakouts require 10 MHz limit due to longer wires
+      Serial.println(F("SD begin() failed"));
+      for(;;); // Fatal error, do not continue
+    }
+  #else
+    // SPI or QSPI flash requires two steps, one to access the bare flash
+    // memory itself, then the second to access the filesystem within
+    if(!flash.begin()) {
+      Serial.println(F("flash begin() failed"));
+      for(;;);
+    }
+    if(!filesys.begin(&flash)) {
+      Serial.println(F("filesys begin() failed"));
+      for(;;);
+    }
+  #endif
+    Serial.println(F("OK!"));
+    
+    // Rotate screen orientation to correct orientation
+    tft.setRotation(2);
+
+    tft.fillScreen(ST77XX_BLACK);                     // Make LCD screen black
+    reader.drawBMP("/White50.bmp", tft, 182, 182);    // Add white color tile
+
+    // PID velocity control setup
+    for(int k = 0; k < NMOTORS; k++){
+      pinMode(pwm[k], OUTPUT);
+      pinMode(in1[k], OUTPUT);
+      pinMode(in2[k], OUTPUT);
+    }
+}
+
+void loop() {
+  // 0. DECLARE VARIABLES
+  uint16_t redReading, greenReading, blueReading, c;  // Color readings from RGB sensor
+  
+  // 1. READ DEVICE INPUTS
+  int redButtonState = debounce(redButton);           // Red button state
+  int greenButtonState = debounce(greenButton);       // Green button state
+  int blueButtonState = debounce(blueButton);         // Blue button state
+  int valL = digitalRead(inputL);                     // Left IR line sensor reading
+  int valR = digitalRead(inputR);                     // Right IR line sensor reading
+  totalTime = millis();                               // Time from program start
+  readEncoder();                                      // Determine encoder positions
+
+  // 2. MOTOR CONTROL
+  // Time difference
+  long currT = micros();
+  float deltaT = ((float) (currT - prevT))/(1.0e6);
+  prevT = currT;
+  
+  for(int k = 0; k < NMOTORS; k++) {
+    // Compute velocity from encoder readings
+    vel[k] = (pos[k] - posPrev[k])/deltaT;
+    posPrev[k] = pos[k];
+    prevT = currT;
+    
+    // Convert count/s to RPM where 230.0 corresponds to encoder counts/revolution
+    vel[k] = (vel[k]/230.0)*60.0;
+
+    // Low-pass filter (25 Hz cutoff)
+    vfilt[k] = 0.854*vfilt[k] + 0.0728*vel[k] + 0.0728*velPrev[k];
+    velPrev[k] = vel[k];
+
+    // Evaluate the control signal
+    if (state == S2 || state == S3 || state == S4) {
+      Kp[k] = 10;
+      Ki[k] = 1.85;
+      Kd[k] = 0;
+      e[k] = targetVel[k] - vfilt[k];
+    } else if (state == S5) {
+      Kp[k] = 3.75;
+      Ki[k] = 0.5;
+      Kd[k] = 0.4;
+      e[k] = enc[k] - pos[k];
+    }
+    e_int[k] = e_int[k] + (e[k] * deltaT);
+    e_der[k] = (e[k] - e_prev[k])/deltaT;
+    e_prev[k] = e[k];
+    motor_pwm[k] = (Kp[k] * e[k]) + (Ki[k] * e_int[k])+ (Kd[k] * e_der[k]);
+    
+    // Signal the motor
+    setMotor(motor_pwm[k],pwm[k],in1[k],in2[k]);
+  }
+  
+  // 3. EVALUATE FSM VARIABLES
+  // CS
+  if ((redButtonState || greenButtonState || blueButtonState) && (state == S0 || state == S1)) {
+    CS = 1;
+    redSelect = 0;
+    greenSelect = 0;
+    blueSelect = 0;
+    red = 0;
+    green = 0;
+    blue = 0;
+    if (redButtonState) {
+      redSelect = 1;
+      red = 255;
+      // Turn on red LED
+      digitalWrite(redLED, HIGH);
+      digitalWrite(greenLED, LOW);
+      digitalWrite(blueLED, LOW);
+      strip.setPixelColor(1, COLOR_ON, 0, 0, 0);
+    } else if (greenButtonState) {
+      greenSelect = 1;
+      green = 255;
+      // Turn on green LED
+      digitalWrite(redLED, LOW);
+      digitalWrite(greenLED, HIGH);
+      digitalWrite(blueLED, LOW);
+      strip.setPixelColor(1, 0, COLOR_ON, 0, 0);
+    } else if (blueButtonState) {
+      blueSelect = 1;
+      blue = 255;
+      // Turn on blue LED
+      digitalWrite(redLED, LOW);
+      digitalWrite(greenLED, LOW);
+      digitalWrite(blueLED, HIGH);
+      strip.setPixelColor(1, 0, 0, COLOR_ON, 0);
+    }
+  } else {
+    CS = 0;
+  }
+
+  // SB
+  SB = digitalRead(capTouch);
+  if (state != S0 && state != S1) {
+    strip.setPixelColor(0, 0, 0, 0, 50);    // Turn on game mode LED
+  }
+
+  // NS
+  if ((valL == LOW) || (valR == LOW)) {     // If either IR sensor detects a line
+    NS = 1;
+  } else {
+    NS = 0;
+  }
+
+  // NB
+  NB = 7 - LED_num;
+
+  // FW
+  if (tile_num == 3 || tile_num == 6 || tile_num == 9 || tile_num == 10 || tile_num == 15) {
+    FW = 1;
+    turn_direc = 1;                         // Turn right
+  } else if (tile_num == 12 || tile_num == 13) {
+    FW = 1;
+    turn_direc = 0;                         // Turn left
+  } else {
+    FW = 0;
+  }
+
+  // TO
+  if (SB) {
+    startTime = totalTime;
+  }
+  if (totalTime - startTime > 120000 && state != S1) {
+    TO = 1;
+  }
+
+  // Display LED strip
+  strip.show();
+
+  // Read incoming byte
+  if (Serial.available() > 0) {
+    temp = Serial.read();
+  }
+
+  // Only print input if input changes
+  if (temp != prev_sys_input) {
+    sys_input = temp;
+    prev_sys_input = temp;
+    Serial.println(sys_input);
+  }
+
+  // Mapping user inputs to FSM input variables
+  if (sys_input == 'W') {
+    WS = 1;
+  } else if (sys_input == '9') {
+    ND = 1;
+  } else if (sys_input == 'F') {
+    FW = 1;
+  } else if (sys_input == 'T') {
+    SW = 1;
+  }
+ 
+  // 3. FINITE STATE MACHINE
+  switch (state) {
+    case S0:                  // Robot start: Wait for color selection from user
+      // Reset FSM inputs
+      WS = 0;
+      BP = 0;
+      ND = 0;
+      FW = 0;
+      SW = 0;
+      TO = 0;
+
+      for(int k = 0; k < NMOTORS; k++) {
+        // Stop motors
+        setMotor(0, pwm[k], in1[k], in2[k]);
+        targetVel[k] = 0;
+        
+        // Reset error variables
+        e[k] = 0;
+        e_int[k] = 0;
+        e_der[k] = 0;
+        e_prev[k] = 0;
+      }
+
+      // RGB buttons reset
+      digitalWrite(redLED, LOW);
+      digitalWrite(greenLED, LOW);
+      digitalWrite(blueLED, LOW);
+
+      // LED strip reset
+      strip.clear();
+      LED_num = 7;    // LED number on LED strip
+      tile_num = 0;   // Tile number that robot is on
+
+      // LCD screen reset
+      tft.fillScreen(ST77XX_BLACK);                     // Make LCD screen black
+      reader.drawBMP("/White50.bmp", tft, 182, 182);    // Add white color tile
+      
+      if (CS) {               // Color selected
+        state = S1;
+        Serial.println("LED for target color ON");
+        Serial.println("-----------------------------");
+        Serial.println("Stage 1: Press start button");
+      }
+      break;
+
+    case S1:                  // Color selected: Wait for game mode start
+      // Reset FSM inputs
+      WS = 0;
+      ND = 0;
+      SW = 0;
+      
+      if (SB) {               // Start button pressed
+        state = S2;
+        Serial.println("LED for game mode ON");
+        Serial.println("Motor drive ON");
+        Serial.println("-----------------------------");
+        Serial.println("Stage 2: Robot following path");
+      } 
+      break;
+
+    case S2:                        // Game mode: Robot following path
+      // Reset FSM inputs
+      OF = 0;
+      BP = 0;
+
+      if (ND && !flag) {
+        for(int k = 0; k < NMOTORS; k++) {
+          // Reset error variables
+          e[k] = 0;
+          e_int[k] = 0;
+          e_der[k] = 0;
+          e_prev[k] = 0;
+        }
+        flag = 1;
+      }
+
+      targetVel[0] = rightSpeed;                 // Set right motor speed
+      targetVel[1] = leftSpeed;                  // Set left motor speed
+      
+      if (NS) {                     // New square detected
+        state = S3;
+        flag = 0;
+        Serial.println("-----------------------------");
+        Serial.println("Stage 3: New square detected");
+        Serial.println("Color block added to LCD screen");
+      } else if (FW && !ND) {       // Front wall detected and 90 degrees not turned
+        state = S5;
+        Serial.println("-----------------------------");
+        Serial.println("Stage 5: Wall detected --- Turning 90 degrees");
+      } else if (SW) {              // Side wall detected
+        state = S6;
+        Serial.println("-----------------------------");
+        Serial.println("Stage 6: Path correction");
+        Serial.println("LED for path correction ON");
+        delay(2000);
+      } 
+
+      if (WS) {                     // White square detected
+        state = S0;
+        Serial.println("-----------------------------");
+        Serial.println("All moles whacked!");
+        Serial.println("-----------------------------");
+        Serial.println("SYSTEM RESET");
+        Serial.println("-----------------------------");
+        Serial.println("Stage 0: Select target color (R, G, or B)");
+      }
+
+      if (TO) {                     // Time runs out
+        state = S0;
+        Serial.println("-----------------------------");
+        Serial.println("Time's up!");
+        Serial.println("-----------------------------");
+        Serial.println("Stage 0: Select target color (R, G, or B)");
+      }
+      break;
+      
+    case S3:                  // New square detected: Travel one foot and sense color
+      // Reset FSM inputs
+      WS = 0;
+      ND = 0;
+      SW = 0;
+
+      lTime = millis();
+      if (!tflag) {
+        sTime = millis();
+        tflag = 1;
+      }
+
+      if (lTime - sTime < timeDriveStraight) {
+        targetVel[0] = rightSpeed;                 // Set right motor speed
+        targetVel[1] = leftSpeed;                  // Set left motor speed
+      } else {
+        for(int k = 0; k < NMOTORS; k++) {
+          // Stop motors
+          setMotor(0, pwm[k], in1[k], in2[k]);
+          targetVel[k] = 0;
+          
+          // Reset error variables
+          e[k] = 0;
+          e_int[k] = 0;
+          e_der[k] = 0;
+          e_prev[k] = 0;
+        }
+
+        tflag = 0;
+        OF = 1;                                   // One foot traveled
+
+        // Sense color
+        //delay(colorSensorDelay);
+        tcs.getRawData(&redReading, &greenReading, &blueReading, &c); // Detect tile color
+        //delay(colorSensorDelay);
+        tcs.getRawData(&redReading, &greenReading, &blueReading, &c); // Detect tile color
+        //delay(colorSensorDelay);
+        
+        // Check for target color
+        redCheck = (redReading > 2000) && (greenReading < 3200) && (blueReading < 3200);
+        greenCheck = 1;
+        //greenCheck = (redReading > 4000) && (greenReading > 4000) && (blueReading < 4000);
+        blueCheck = (redReading < 2000) && (greenReading < 2000) && (blueReading > 1800);
+      
+        // For DC
+      //  redCheck = (redReading > 4000) && (greenReading < 2500) && (blueReading < 2500);
+      //  greenCheck = (redReading < 2500) && (greenReading > 2000) && (blueReading < 2500);
+      //  blueCheck = (redReading < 2500) && (greenReading < 3500) && (blueReading > 3500);
+      
+        if (redSelect) {
+          DC = redCheck;
+        } else if (blueSelect) {
+          DC = blueCheck;
+        } else if (greenSelect) {
+          DC = !redCheck && !blueCheck;
+        }
+
+        // Add color to LCD screen
+        if (tile_num < 15 && (redCheck || greenCheck || blueCheck)) {
+          if (redCheck) {
+            addRed(mapping[tile_num][0], mapping[tile_num][1]);
+          } else if (blueCheck) {
+            addBlue(mapping[tile_num][0], mapping[tile_num][1]);
+          } else if (!redCheck && !blueCheck) {
+            addGreen(mapping[tile_num][0], mapping[tile_num][1]);
+          }
+        }
+        tile_num++;
+      }
+      Serial.println(tile_num);
+      
+      if (OF && DC) {         // One foot traveled and desired color detected
+        state = S4;
+        Serial.println("Target color detected");
+        Serial.println("-----------------------------");
+        Serial.println("Stage 4: Whack the mole");
+        Serial.println("Motor drive OFF");
+        Serial.println("One LED turns ON for corresponding block");
+        Serial.println("Mole whacker ON");
+      } else if (OF && !DC) { // One foot traveled but desired color not detected
+        state = S2;
+        Serial.println("Target color not detected");
+        Serial.println("-----------------------------");
+        Serial.println("Stage 2: Robot following path");
+      }
+
+      if (TO || tile_num == 16) {               // Time runs out
+        state = S0;
+        Serial.println("-----------------------------");
+        Serial.println("Time's up!");
+        Serial.println("-----------------------------");
+        Serial.println("Stage 0: Select target color (R, G, or B)");
+      }
+      break;
+
+    case S4:                  // Place block
+      // Reset FSM inputs
+      OF = 0;
+      WS = 0;
+      ND = 0;
+      SW = 0;
+
+      for(int k = 0; k < NMOTORS; k++) {
+        // Stop motors
+        setMotor(0, pwm[k], in1[k], in2[k]);
+        targetVel[k] = 0;
+
+        // Reset error variables
+        e[k] = 0;
+        e_int[k] = 0;
+        e_der[k] = 0;
+        e_prev[k] = 0;
+      }
+
+      whack_mole();
+      BP = 1;                 // Block placed
+
+      // Turn on LED for corresponding block number
+      if (LED_num > 2) {
+        strip.setPixelColor(LED_num, red, green, blue, 0);
+        LED_num--;
+      }
+      
+      if (BP) {               // Block placed
+        state = S2;
+        Serial.println("Mole whacked!");
+        Serial.println("Mole whacker OFF");
+        Serial.println("-----------------------------");
+        Serial.println("Stage 2: Robot following path");
+      }
+
+      if (TO) {               // Time runs out
+        state = S0;
+        Serial.println("-----------------------------");
+        Serial.println("Time's up!");
+        Serial.println("-----------------------------");
+        Serial.println("Stage 0: Select target color (R, G, or B)");
+      }
+      break;
+
+    case S5:                      // Turn robot 90 degrees
+      // Reset FSM inputs
+      WS = 0;
+      FW = 0;
+      SW = 0;
+
+      if (!flag) {      
+        for(int k = 0; k < NMOTORS; k++) {
+          currenc[k] = pos[k];
+        }
+        flag = 1;
+      }
+
+      if (turn_direc) {           // Turn right
+        enc[0] = currenc[0] - rightTurn;
+        enc[1] = currenc[1] + rightTurn;
+      } else if (!turn_direc) {   // Turn left
+        enc[0] = currenc[0] + leftTurn;
+        enc[1] = currenc[1] - leftTurn;
+      }
+
+      lTime = millis();
+      if (!tflag) {
+        sTime = millis();
+        tflag = 1;
+      }
+
+      if (lTime - sTime > timeTurn) {
+        ND = 1;
+      }
+      
+      if (ND) {                   // 90 degrees turned
+        state = S2;
+        tflag = 0;
+        flag = 0;
+        Serial.println("90 degrees turned");
+        Serial.println("-----------------------------");
+        Serial.println("Stage 2: Robot following path");
+      }
+
+      if (TO) {                   // Time runs out
+        state = S0;
+        tflag = 0;
+        flag = 0;
+        Serial.println("-----------------------------");
+        Serial.println("Time's up!");
+        Serial.println("-----------------------------");
+        Serial.println("Stage 0: Select target color (R, G, or B)");
+      }
+      break;
+
+    case S6:                  // Correct robot path
+      // Reset FSM inputs
+      WS = 0;
+      ND = 0;
+      SW = 0;
+      
+      if (!SW) {              // Side wall not detected
+        state = S2;
+        Serial.println("LED for path correction OFF");
+        Serial.println("-----------------------------");
+        Serial.println("Stage 2: Robot following path");
+        delay(5000);
+      }
+
+      if (TO) {                     // Time runs out
+        state = S0;
+        Serial.println("-----------------------------");
+        Serial.println("Time's up!");
+        Serial.println("-----------------------------");
+        Serial.println("Stage 0: Select target color (R, G, or B)");
+      }
+      break;
+  }
+}
+
+// Debounce function for momentary pushbuttons
+int debounce(int pin) {
+  int pinVal1 = 0;              // First button reading
+  int pinVal2 = 0;              // Second button reading
+
+  pinVal1 = digitalRead(pin);
+  delay(5);
+  pinVal2 = digitalRead(pin);
+
+  if (pinVal1 == pinVal2) {     // If readings are the same
+    return pinVal1;
+  } else {
+    return 0;
+  }
+}
+
+// Mole whacking function
+void whack_mole() {
+  int angle = 0;                              // Servo motor angle
+  
+  for(angle = 0; angle < 180; angle += 5) {   // Move piston back                             
+    mole_whacker.write(angle);
+    delay(5);                       
+  } 
+  delay(300);
+  
+  for(angle = 180; angle > 0; angle -= 5) {   // Move piston forward                         
+    mole_whacker.write(angle);
+    delay(5);                       
+  } 
+  delay(300);
+}
+
+// Adds red colored square to LCD screen
+void addRed(int xcoord, int ycoord) {
+  reader.drawBMP("/Red50.bmp", tft, xcoord, ycoord);
+}
+
+// Adds green colored square to LCD screen
+void addGreen(int xcoord, int ycoord) {
+  reader.drawBMP("/Green50.bmp", tft, xcoord, ycoord);
+}
+
+// Adds blue colored square to LCD screen
+void addBlue(int xcoord, int ycoord) {
+  reader.drawBMP("/Blue50.bmp", tft, xcoord, ycoord);
+}
+
+// Sets motor PWM signal and direction
+void setMotor(int pwm, int pwmpin, int in1, int in2) {
+  // Limit PWM values from PID controller
+  if (pwm > 255) {
+    pwm = 255;
+  }
+  if (pwm < -255) {
+    pwm = -255;
+  }
+  
+  int pwm_val = (int) fabs(pwm);
+  if(pwm == 0 || targetVel == 0){
+    digitalWrite(in1, LOW);
+    digitalWrite(in2, LOW);
+  }
+  if (pwm > 0){
+    digitalWrite(in1, HIGH);
+    digitalWrite(in2, LOW);
+    analogWrite(pwmpin, pwm_val);
+  }
+  if (pwm < 0){
+    digitalWrite(in1, LOW);
+    digitalWrite(in2, HIGH);
+    analogWrite(pwmpin, pwm_val);
+  }
+}
+
+// Determines encoder positions
+void readEncoder(){
+  // Read encoder
+  newLeft = knobLeft.read();    // Left motor position
+  newRight = knobRight.read();  // Right motor position
+
+  pos[1] = newLeft;
+  pos[0] = newRight;
+}
