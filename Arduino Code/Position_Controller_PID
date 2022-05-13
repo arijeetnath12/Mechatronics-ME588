@@ -1,0 +1,133 @@
+#include <Encoder.h>
+
+// Encoder Pin Designations
+Encoder knobLeft(2, 19);
+Encoder knobRight(18, 3);
+
+// Pins
+const int pwm[] = {4,5};
+const int in1[] = {32,36};
+const int in2[] = {30,34};
+
+// Global variables needed for position and velocity controller
+long prevT = 0;
+float newLeft, newRight;
+volatile int pos[] = {0,0};
+volatile float vel[] = {0,0};
+float vfilt[] = {0,0};
+float velPrev[] = {0,0};
+float posPrev[] = {0,0};
+long currenc[] = {0,0};
+long enc[] = {0,0};
+
+// PID Controller
+int motor_pwm[] = {0,0}; // PID computation stored here
+
+// Error
+float e[] = {0,0};
+float e_int[] = {0,0};
+float e_der[] = {0,0};
+float e_prev[] = {0,0};
+
+// Target speed
+float targetVel[] = {0,0};
+
+// Left Motor 0 and Right Motor is 1
+float Kp[] = {3.75,3.75};
+float Ki[] = {0.5,0.5};
+float Kd[] = {0.4,0.4};
+
+#define NMOTORS 2
+int flag = 0;
+
+void setup() {
+  Serial.begin(9600);
+
+  // Initialize output pins for number of motors
+  for(int k = 0; k < NMOTORS; k++){
+      pinMode(pwm[k],OUTPUT);
+      pinMode(in1[k],OUTPUT);
+      pinMode(in2[k],OUTPUT);
+   }
+}
+
+void loop() {
+  if(flag == 0){
+    for(int k = 0; k < NMOTORS; k++){
+      currenc[k] = pos[k];
+    }
+  }
+  flag = 1;
+  
+  enc[0] = currenc[0] - 200; // Target Encoder Value corresponding to RIGHT 90 deg
+  enc[1] = currenc[1] + 200;
+//  enc[1] = currenc[0] - 236; // Target Encoder Value corresponding to LEFT 90 deg
+//  enc[0] = currenc[1] + 236;
+
+  // Read encoder positions in counts
+  readEncoder();
+  
+  // Time difference
+  long currT = micros();
+  float deltaT = ((float) (currT - prevT))/( 1.0e6 );
+  prevT = currT;
+  
+  for(int k = 0; k < NMOTORS; k++){
+    // Compute velocity from encoder readings
+    vel[k] = (pos[k] - posPrev[k])/deltaT;
+    posPrev[k] = pos[k];
+    prevT = currT;
+    
+    // Convert count/s to RPM where 230.0 corresponds to encoder counts/revolution
+    vel[k] = (vel[k]/230.0)*60.0;
+
+    // Low-pass filter (25 Hz cutoff)
+    vfilt[k] = 0.854*vfilt[k] + 0.0728*vel[k] + 0.0728*velPrev[k];
+    velPrev[k] = vel[k];
+
+    // Evaluate the control signal
+    e[k] = enc[k] - pos[k];
+    e_int[k] = e_int[k] + (e[k] * deltaT);
+    e_der[k] = (e[k] - e_prev[k])/deltaT;
+    e_prev[k] = e[k];
+    motor_pwm[k] = (Kp[k] * e[k]) + (Ki[k] * e_int[k])+ (Kd[k] * e_der[k]);
+    
+    // Signal the motor
+    setMotor(motor_pwm[k],pwm[k],in1[k],in2[k]);
+  }
+}
+
+
+void setMotor(int pwm, int pwmpin, int in1, int in2){
+  if (pwm > 255){
+    pwm = 255;
+  }
+  if (pwm < -255){
+    pwm = -255;
+  }
+  
+  int pwm_val = (int) fabs(pwm);
+  if(pwm == 0 || targetVel == 0){
+    digitalWrite(in1,LOW);
+    digitalWrite(in2,LOW);
+  }
+  if (pwm > 0){
+    digitalWrite(in1,HIGH);
+    digitalWrite(in2,LOW);
+    analogWrite(pwmpin,pwm_val);
+  }
+  if (pwm < 0){
+    digitalWrite(in1,LOW);
+    digitalWrite(in2,HIGH);
+    analogWrite(pwmpin,pwm_val);
+  }
+}
+
+void readEncoder(){
+  // Read encoder
+  newLeft = knobLeft.read();
+  newRight = knobRight.read();
+
+  pos[1] = newLeft;
+  pos[0] = newRight;
+}
