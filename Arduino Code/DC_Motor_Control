@@ -1,0 +1,167 @@
+#include <Encoder.h>
+
+// Change these pin numbers to the pins connected to your encoder.
+//   Best Performance: both pins have interrupt capability
+//   Good Performance: only the first pin has interrupt capability
+//   Low Performance:  neither pin has interrupt capability
+Encoder knobLeft(2, 19);
+Encoder knobRight(18, 3);
+//   avoid using pins with LEDs attached
+
+int EnApin = 4;
+int EnBpin = 5;
+int In1pin = 32;
+int In2pin = 30;
+int In3pin = 36;
+int In4pin = 34;
+
+long prevT = 0;
+int posPrev = 0;
+
+int PWMLeft = 170;
+int PWMRight = 150;
+int desSpeed = 200;
+int EncCountForward = 2000;
+int EncCount90Deg = 105;
+int EncCountLeft = 0;
+int EncCountRight = 0;
+int flag1 = 0;
+int flag2 = 0;
+int flag3 = 0;
+int PWMOffset = 100;
+
+void setup() {
+  Serial.begin(9600);
+  pinMode(In1pin, OUTPUT);
+  pinMode(In2pin, OUTPUT);
+  pinMode(In3pin, OUTPUT);
+  pinMode(In4pin, OUTPUT);
+}
+
+long positionLeft  = -999;
+long positionRight = -999;
+
+void loop() {
+  
+  if (!flag1) {
+    // Set motor speed
+    analogWrite(EnApin, PWMRight);
+    analogWrite(EnBpin, PWMLeft);
+    // Drive forward
+    digitalWrite(In1pin, HIGH);
+    digitalWrite(In2pin, LOW);
+    digitalWrite(In3pin, HIGH);
+    digitalWrite(In4pin, LOW);
+    
+    // Determine encoder position
+    long newLeft, newRight;
+    newLeft = knobLeft.read();
+    newRight = knobRight.read();
+  
+    // Determine speed
+    long currT = micros();
+    float deltaT = ((float) (currT-prevT))/1.0e6;
+    float velocityLeft = (newLeft - positionLeft)/deltaT;
+    float velocityRight = (newRight - positionRight)/deltaT;
+    positionLeft = newLeft;
+    positionRight = newRight;
+    prevT = currT;
+    float v1 = velocityLeft/232.0*60.0;
+    float v2 = -velocityRight/232.0*60.0;
+  
+    // Speed control
+    if (PWMLeft == 255) {
+      PWMLeft--;
+    } else if (v1 < desSpeed) {
+      PWMLeft++;
+    } else if (v1 > desSpeed) {
+      PWMLeft--;
+    }
+  
+    if (PWMRight == 255) {
+      PWMRight--;
+    } else if (v2 < desSpeed) {
+      PWMRight++;
+    } else if (v2 > desSpeed) {
+      PWMRight--;
+    }
+
+    if (positionLeft >= EncCountForward) {
+      flag1 = 1;
+      
+      // Stop
+      digitalWrite(In1pin, LOW);
+      digitalWrite(In2pin, LOW);
+      digitalWrite(In3pin, LOW);
+      digitalWrite(In4pin, LOW);
+      delay(2000);
+    }
+  } else if (!flag2) {
+    // Set motor speed
+    analogWrite(EnApin, PWMRight-PWMOffset);
+    analogWrite(EnBpin, PWMLeft-PWMOffset);
+    // Turn right
+    digitalWrite(In1pin, LOW);
+    digitalWrite(In2pin, HIGH);
+    digitalWrite(In3pin, HIGH);
+    digitalWrite(In4pin, LOW);
+    
+    // Determine encoder position
+    long newLeft, newRight;
+    newLeft = knobLeft.read();
+    newRight = knobRight.read();
+  
+    // Determine encoder count
+    EncCountLeft = (newLeft - positionLeft);
+    EncCountRight = (newRight - positionRight);
+    Serial.println(EncCountLeft);
+
+    if (EncCountLeft >= EncCount90Deg && EncCountRight <= -EncCount90Deg) {
+      EncCountLeft = 0;
+      EncCountRight = 0;
+      positionLeft = newLeft;
+      positionRight = newRight;
+      flag2 = 1;
+      
+      // Stop
+      digitalWrite(In1pin, LOW);
+      digitalWrite(In2pin, LOW);
+      digitalWrite(In3pin, LOW);
+      digitalWrite(In4pin, LOW);
+      delay(2000);
+    }
+  } else if (!flag3) {
+    // Set motor speed
+    analogWrite(EnApin, PWMRight-PWMOffset);
+    analogWrite(EnBpin, PWMLeft-PWMOffset);
+    // Turn left
+    digitalWrite(In1pin, HIGH);
+    digitalWrite(In2pin, LOW);
+    digitalWrite(In3pin, LOW);
+    digitalWrite(In4pin, HIGH);
+    
+    // Determine encoder position
+    long newLeft, newRight;
+    newLeft = knobLeft.read();
+    newRight = knobRight.read();
+  
+    // Determine encoder count
+    EncCountLeft = (newLeft - positionLeft);
+    EncCountRight = (newRight - positionRight);
+    Serial.println(EncCountRight);
+
+    if (EncCountLeft <= -EncCount90Deg && EncCountRight >= EncCount90Deg) {
+      EncCountLeft = 0;
+      EncCountRight = 0;
+      positionLeft = newLeft;
+      positionRight = newRight;
+      flag3 = 1;
+      
+      // Stop
+      digitalWrite(In1pin, LOW);
+      digitalWrite(In2pin, LOW);
+      digitalWrite(In3pin, LOW);
+      digitalWrite(In4pin, LOW);
+    }
+  }
+}
