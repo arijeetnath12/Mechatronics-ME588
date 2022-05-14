@@ -18,6 +18,8 @@ For future work, there is room for improvement in making the robot achieve its o
 # FSM State Transition diagram
 <img src="https://user-images.githubusercontent.com/94764537/168403170-c64275ca-bec9-412b-a235-75236144847d.png" width="500">
 
+# Final Assembly
+<img src="https://user-images.githubusercontent.com/94764537/168403966-c986397e-06c8-43c4-8090-ee0236a2ecc5.JPG" width="500">
 
 # Video of the robot navigating the arena
 https://user-images.githubusercontent.com/94764537/168402349-5cb47798-b490-41eb-8536-912cad8ffef6.mp4
