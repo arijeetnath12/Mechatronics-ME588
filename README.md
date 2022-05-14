@@ -16,7 +16,7 @@ For future work, there is room for improvement in making the robot achieve its o
 5. Cheng Kong
 
 # FSM State Transition diagram
-![image](https://user-images.githubusercontent.com/94764537/168403170-c64275ca-bec9-412b-a235-75236144847d.png=250x250)
+<img src="https://user-images.githubusercontent.com/94764537/168403170-c64275ca-bec9-412b-a235-75236144847d.png" width="100">
 
 
 # Video of the robot navigating the arena
